@@ -36,6 +36,7 @@ gaz = gaz_raw %>% select(FEATURE_ID,
                           DATE_EDITED)
 gaz
 ```
+
 3. Convert `gaz` columns to correct type. Convert any placeholders for unknown data to `NA`
 ```{r}
 gaz = gaz %>%
@@ -71,14 +72,14 @@ gaz
 
 ## Create Database
 
-1. Create a connection to a new ```gaz.db``` SQLite database.
+1. Create a connection to a new `gaz.db` SQLite database.
 
 ``` {r}
 con <- DBI::dbConnect(RSQLite::SQLite(), "gaz.db")
 
 ```
 
-2. Copy the ```gaz``` tibble into the ```gaz.db``` database.
+2. Copy the `gaz` tibble into the `gaz.db` database.
 
 ``` {r}
 con %>% copy_to(gaz, "gaz",
@@ -98,7 +99,7 @@ con %>% copy_to(gaz, "gaz",
 
 ## Analyze
 
-Using SQL queries and the ```dbGetQuery``` function, create R code snippets that answer the following questions about California:
+Using SQL queries and the `dbGetQuery` function, create R code snippets that answer the following questions about California:
 
 1. What is the most-frequently-occuring feature name?
 
@@ -141,7 +142,7 @@ county_centers
 ```
 
 4. What are the fractions of the total number of features in each county that are natural? man-made?
-Hint: Copy the feature class categories tibble you created into the ```gaz.db``` database. Then you can ```JOIN``` it to the the ```gaz``` table.
+Hint: Copy the feature class categories tibble you created into the `gaz.db` database. Then you can `JOIN` it to the the `gaz` table.
 ```{r}
 class_types = gaz %>%
   group_by(FEATURE_CLASS) %>%
@@ -216,48 +217,37 @@ con %>% copy_to(class_types, "class_types",
         temporary = FALSE,
         indexes = list("FEATURE_CLASS", "type"))
 
-class_types = con %>% dbGetQuery("SELECT COUNTY_NAME, gaz.FEATURE_CLASS, type
-                                    FROM gaz
-                                    JOIN class_types
-                                    ON gaz.FEATURE_CLASS = class_types.FEATURE_CLASS
-                                    WHERE COUNTY_NAME IS NOT NULL
-                                    ;")
+con %>% dbExecute("CREATE VIEW county_types AS 
+                  SELECT COUNTY_NAME, gaz.FEATURE_CLASS, type
+                  FROM gaz
+                  JOIN class_types
+                  ON gaz.FEATURE_CLASS = class_types.FEATURE_CLASS
+                  WHERE COUNTY_NAME IS NOT NULL 
+                  ;")
 
-con %>% copy_to(class_types, "class_types",
-        temporary = FALSE,
-        indexes = list("COUNTY_NAME", "type"), overwrite = TRUE)
+con %>% dbExecute("CREATE VIEW type_counts AS
+                   SELECT COUNTY_NAME, type, COUNT() as count
+                   FROM county_types
+                   GROUP BY COUNTY_NAME, type;")
 
 
-type_counts = con %>% dbGetQuery("SELECT COUNTY_NAME, type, COUNT() as count FROM class_types
-                   GROUP BY COUNTY_NAME, type")
+ con %>% dbExecute("CREATE VIEW spread_type_counts AS 
+                     SELECT COUNTY_NAME,
+                     SUM(CASE WHEN type=\"natural\" THEN count ELSE NULL END) AS natural,
+                     SUM(CASE WHEN type=\"manmade\" THEN count ELSE NULL END) AS manmade,
+                     SUM(CASE WHEN type IS NULL THEN count ELSE NULL END) AS ambiguous,
+                     SUM(count) AS total
+                     FROM type_counts
+                     GROUP BY COUNTY_NAME;
+                    ")
 
-con %>% copy_to(type_counts, "type_counts",
-                temporary = FALSE,
-                indexes = list("COUNTY_NAME", "type", "count"))
-
-totals = con %>% dbGetQuery("
-                    SELECT COUNTY_NAME, type, sum(count) AS total FROM type_counts
-                    GROUP BY COUNTY_NAME
-                   ")
-
-con %>% copy_to(totals, "totals",
-                temporary = FALSE,
-                indexes = list("COUNTY_NAME", "type", "total"))
-
-fractions = con %>% dbGetQuery("SELECT type_counts.COUNTY_NAME, type_counts.type,
-                    round(count*1.0/total, 2) AS fraction
-                   FROM type_counts
-                   JOIN totals ON type_counts.COUNTY_NAME = totals.COUNTY_NAME")
-
-con %>% copy_to(fractions, "fractions",
-                temporary = FALSE, overwrite = TRUE)
-
-manmade_fractions = con %>% dbGetQuery("SELECT COUNTY_NAME, fraction AS manmade_fraction FROM fractions WHERE type = \"manmade\";")
-
-con %>% copy_to(manmade_fractions, "manmade_fractions")
-
-tbl(con,"fractions") %>% show_query()
-
+ fractions = con %>% dbGetQuery("SELECT COUNTY_NAME,
+                                round(natural*1.0/total,2) AS natural_fraction,
+                                round(manmade*1.0/total,2) AS manmade_fraction,
+                                round(ambiguous*1.0/total,2) AS ambiguous_fraction
+                                FROM spread_type_counts")
+ 
+ fractions
 
 ```
 
